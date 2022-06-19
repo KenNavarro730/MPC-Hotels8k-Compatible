@@ -1,13 +1,14 @@
 models_root: '../models' #path where trained models will be saved
 dataset_root: '../datasets/'
-imgs_root: '<path_to_coco_dataset>/images/' #path where the coco images will be found
+imgs_root: '/home/tun84049/Desktop/images' #path where the coco images will be found
 vocab_root: 'resources/vocabs/'
-dataset_name: coco
+dataset_path: '/shared/data/hotel_8k_images'
+dataset_name: Hotels8k
 number_of_categories_combined: 2
 trainer: probabilistic
 
 dataloader:
-    batch_size: 32
+    batch_size: 16
     num_workers: 8
     test_num_workers: 8
     word_dim: 300
@@ -29,7 +30,7 @@ model:
 
 # optimizer configuration
 optimizer:
-    name: adam
+    name: AdamW
     learning_rate: 0.0002
     lr_decay_rate: 0.1
     lr_decay_step: 600

@@ -19,16 +19,14 @@ import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
 import pprint
-
 pp = pprint.PrettyPrinter(indent=4)
-
-
+import neptune.new as neptune
 class TrainerProbabilistic:
     def __init__(self, config, path=None):
 
         self.config = config
-        self.train_dataset = dataset_factory(config, split='train')
-        self.test_dataset = dataset_factory(config, split='test')
+        self.train_dataset = dataset_factory(config, split='train') #This will now return hotels8k train
+        self.test_dataset = dataset_factory(config, split='test') #returns hotels8k test now
 
         self.train_dataloader = self.train_dataset.get_loader()
         self.test_dataloader = self.test_dataset.get_loader()
@@ -104,6 +102,10 @@ class TrainerProbabilistic:
     def train(self):
         batch_number = 0
         self.set_train()
+        run = neptune.init(
+            project="vidarlab/MultiImageClassification",
+            api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIzMTRjODI4OC1iN2U4LTQ5ZWQtODQyNy1hNWU4NzAyOTIzMGYifQ==",
+        )
         for epoch in range(self.config.train.num_epochs):
 
             # out = self.eval(self.test_dataset)
@@ -113,7 +115,6 @@ class TrainerProbabilistic:
             #     pprint.pprint(out, stream=fout)
 
             loss_total = 0
-
             for data in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
                 source, source_modalities, source_lens, target = self.process_input(data)
 
@@ -124,7 +125,6 @@ class TrainerProbabilistic:
                     for loss_name in loss_dict:
                         self.train_writer.add_scalar(loss_name, loss_dict[loss_name], batch_number)
                     test_loss, test_loss_dict = self.compute_test_loss()
-
                     for loss_name in test_loss_dict:
                         self.test_writer.add_scalar(loss_name, test_loss_dict[loss_name], batch_number)
 
@@ -137,13 +137,16 @@ class TrainerProbabilistic:
                 loss_total += loss
 
                 batch_number += 1
-
-            print("loss is {}".format(loss_total))
-
+            run['loss_total'].log(loss_total)
+            run['current_epoch'].log(epoch)
+            _, neptune_data_frfr = self.eval(self.test_dataset) #neptune_data_frfr is a dictionary with key equal to metric name and value equal to that metric's performance
+            # run['evaluation_metrics']= neptune_data_frfr
+            for key in neptune_data_frfr:
+                run[f'evaluation_metrics/{key}'].log(neptune_data_frfr[key])
             if epoch%self.config.train.epochs_between_checkpoints == self.config.train.epochs_between_checkpoints - 1:
                 self.save_models(self.save_model_path, "model{}".format(epoch+1))
             if epoch % self.config.train.val_epochs == self.config.train.val_epochs - 1:
-                out = self.eval(self.test_dataset)
+                out, neptune_data = self.eval(self.test_dataset)
                 pp.pprint(out)
                 with open(os.path.join(self.save_model_path, "results_{}.txt".format(epoch + 1)),
                           'wt') as fout:
@@ -152,6 +155,7 @@ class TrainerProbabilistic:
             self.scheduler.step()
         self.train_writer.close()
         self.test_writer.close()
+        run.stop()
 
     def process_input(self, data):
         source_modalities = random.choices(['image', 'text'], k=self.config.number_of_categories_combined)
@@ -262,7 +266,7 @@ class TrainerProbabilistic:
     def eval(self, dataset):
         self.set_eval()
         out = []
-
+        neptune_data = {}
         test_queries = dataset.get_test_queries()
 
         all_imgs_f = []
@@ -346,7 +350,7 @@ class TrainerProbabilistic:
 
                     r /= len(nn_result)
                     out += [('recall_top' + str(k) + '_correct_composition', r)]
-
+                    neptune_data[f'top {k} recall'] = r
                 total = 0
 
                 for i, nns in enumerate(nn_result):
@@ -359,9 +363,9 @@ class TrainerProbabilistic:
                                                nns[:number_of_images]])
                     total += number_of_positives / number_of_images
                 out += [('R_P score: ', total / len(nn_result))]
-
+                neptune_data['r-Precision'] = total/len(nn_result)
         self.set_train()
-        return out
+        return out, neptune_data
 
     def save_config(self, save_to):
         if not os.path.exists(save_to):

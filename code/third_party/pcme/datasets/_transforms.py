@@ -8,7 +8,8 @@ https://github.com/rwightman/pytorch-image-models/blob/master/timm/data/random_e
 from functools import partial
 
 from nltk.tokenize import word_tokenize
-
+import nltk
+nltk.download('punkt')
 import random
 import math
 import torch

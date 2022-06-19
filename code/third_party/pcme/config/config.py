@@ -35,6 +35,7 @@ def _loader(config_path: str,
     --------
     >>> _loader('test.json')
     """
+    config_path = '/home/tun84049/MCP-Hotels8k-Compatible/code/resources/configs/probabilistic.yaml'
     with open(config_path, 'r') as fin:
         try:
             return yaml.load(fin)
