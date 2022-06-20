@@ -4,7 +4,10 @@ import numpy as np
 import torch
 from PIL import Image
 import torchvision.transforms as transforms
-
+import torchtext
+from torchtext.data import get_tokenizer
+import transformers
+from transformers import BertTokenizer
 def _extract_ids(im_path, target_idx=-2):
     hotel_id = im_path.split(os.sep)[target_idx]
     img_id = im_path.split(os.sep)[-1].split('.')[0]
@@ -33,14 +36,14 @@ class Hotels8k(torch.utils.data.Dataset):
         self.samples = np.array(self._make_dataset())
         self.image_paths = np.array([s[0] for s in self.samples])
         self.targets = np.array([s[1] for s in self.samples])
-        self.targets2paths = {}
-        for i in range(len(self.samples)):
-            p = self.image_paths[i]
-            t = self.targets[i]
-            if t not in self.targets2paths:
-                self.targets2paths[t] = [p]
-            else:
-                self.targets2paths[t].append(p)
+        # self.targets2paths = {}
+        # for i in range(len(self.samples)):
+        #     p = self.image_paths[i]
+        #     t = self.targets[i]
+        #     if t not in self.targets2paths:
+        #         self.targets2paths[t] = [p]
+        #     else:
+        #         self.targets2paths[t].append(p)
         self.num_classes = len(self.class_to_idx)
         self.train = split == 'train'
         self.reset_seed()
@@ -67,6 +70,12 @@ class Hotels8k(torch.utils.data.Dataset):
                 num_missing+=1
         print(num_missing, " hotels missing out of ", len(self.paths))
         return samples
+    def caption_to_id(self, data):
+        #We need the caption for the image to be seperated by white spaces 'Hello how are you' for example.
+        transformer = BertTokenizer.from_pretrained('bert-base-uncased')
+        tokenizer = get_tokenizer("basic_english")
+        words_to_ids = transformer.convert_tokens_to_ids(tokenizer(data))
+        return word_to_ids
     def get_loader(self, pin_memory = True):
         if self.split == 'test' or self.split == 'val':
             num_workers = self.config.dataloader.test_num_workers
@@ -85,10 +94,12 @@ class Hotels8k(torch.utils.data.Dataset):
     def __getitem__(self, index):
         path = self.image_paths[index]
         target = torch.from_numpy(self.targets[index]).long()
+        
         # chosen_paths = [path]
         # unique_requirement = True
-        poss_paths = self.targets2paths[target]
-        images = torch.stack([self.transform(Image.open(p).convert('RGB')) for p in poss_paths])
-        return images, target, poss_paths, index
+        # poss_paths = self.targets2paths[target]
+        # images = torch.stack([self.transform(Image.open(p).convert('RGB')) for p in poss_paths])
+        image = self.transform(Image.open(path).convert('RGB'))
+        return image, target, index #We need to also insert the text query here, this can be done tommorrow once I set everything else up
     def __len__(self):
         return len(self.samples)
