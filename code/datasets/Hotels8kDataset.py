@@ -8,6 +8,7 @@ import torchtext
 from torchtext.data import get_tokenizer
 import transformers
 from transformers import BertTokenizer
+import pandas as pd
 def _extract_ids(im_path, target_idx=-2):
     hotel_id = im_path.split(os.sep)[target_idx]
     img_id = im_path.split(os.sep)[-1].split('.')[0]
@@ -16,6 +17,7 @@ class Hotels8k(torch.utils.data.Dataset):
     def __init__(self, data_dir, split, seed=2022):
         self.paths = np.load(os.path.join(data_dir, f'{split}.npy'))
         self.seed = seed
+        self.path_to_annotations= '/home/tun84049/Downloads/batch_results.csv' #replace with path to csv file containing annotations
         if split == 'train':
             self.transform = transforms.Compose([
                 transforms.RandomResizedCrop(224, scale=(0.75, 1.33)),
@@ -35,7 +37,9 @@ class Hotels8k(torch.utils.data.Dataset):
         self.classes, self.class_to_idx = self._find_classes()
         self.samples = np.array(self._make_dataset())
         self.image_paths = np.array([s[0] for s in self.samples])
-        self.targets = np.array([s[1] for s in self.samples])
+        # self.targets = np.array([s[1] for s in self.samples])
+        self.caption_to_url = self.get_url_annotation_pairs(self.path_to_annotations) #Captions are keys, urls are values
+
         # self.targets2paths = {}
         # for i in range(len(self.samples)):
         #     p = self.image_paths[i]
@@ -47,6 +51,13 @@ class Hotels8k(torch.utils.data.Dataset):
         self.num_classes = len(self.class_to_idx)
         self.train = split == 'train'
         self.reset_seed()
+    def get_url_annotation_pairs(self, dataset_path):
+        dataset = pd.read_csv(dataset_path)
+        accepted_data_unique = dataset.loc[dataset['Approve']==1].drop_duplicates(subset='HITId').drop_duplicates(subset='Description')
+        caption_to_url = dict()
+        for i in range(len(accepted_data_unique)):
+            caption_to_url[accepted_data_unique.iloc[i]['Description']] = accepted_data_unique.iloc[i]['Input.image_path']
+        return caption_to_url
     def reset_seed(self):
         self.rng = np.random.default_rng(self.seed)
     def _find_classes(self):
@@ -75,7 +86,7 @@ class Hotels8k(torch.utils.data.Dataset):
         transformer = BertTokenizer.from_pretrained('bert-base-uncased')
         tokenizer = get_tokenizer("basic_english")
         words_to_ids = transformer.convert_tokens_to_ids(tokenizer(data))
-        return word_to_ids
+        return words_to_ids
     def get_loader(self, pin_memory = True):
         if self.split == 'test' or self.split == 'val':
             num_workers = self.config.dataloader.test_num_workers

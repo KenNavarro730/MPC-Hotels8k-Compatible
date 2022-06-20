@@ -2,7 +2,7 @@ models_root: '../models' #path where trained models will be saved
 dataset_root: '../datasets/'
 imgs_root: '/home/tun84049/Desktop/images' #path where the coco images will be found
 vocab_root: 'resources/vocabs/'
-dataset_path: '/shared/data/hotel_8k_images'
+dataset_path: '/shared/data/hotel_50k_images'
 dataset_name: Hotels8k
 number_of_categories_combined: 2
 trainer: probabilistic

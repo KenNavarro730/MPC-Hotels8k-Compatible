@@ -60,19 +60,19 @@ class EncoderText(nn.Module):
                 raise Exception('Unknown word embedding type: {}'.format(wemb_type))
             assert wemb.vectors.shape[1] == word_dim
 
-            # quick-and-dirty trick to improve word-hit rate
-            missing_words = []
-            for word, idx in word2idx.items():
-                if word not in wemb.stoi:
-                    word = word.replace('-', '').replace('.', '').replace("'", '')
-                    if '/' in word:
-                        word = word.split('/')[0]
-                if word in wemb.stoi:
-                    self.embed.weight.data[idx] = wemb.vectors[wemb.stoi[word]]
-                else:
-                    missing_words.append(word)
-            print('Words: {}/{} found in vocabulary; {} words missing'.format(
-                len(word2idx) - len(missing_words), len(word2idx), len(missing_words)))
+            # # quick-and-dirty trick to improve word-hit rate
+            # missing_words = []
+            # for word, idx in word2idx.items():
+            #     if word not in wemb.stoi:
+            #         word = word.replace('-', '').replace('.', '').replace("'", '')
+            #         if '/' in word:
+            #             word = word.split('/')[0]
+            #     if word in wemb.stoi:
+            #         self.embed.weight.data[idx] = wemb.vectors[wemb.stoi[word]]
+            #     else:
+            #         missing_words.append(word)
+            # print('Words: {}/{} found in vocabulary; {} words missing'.format(
+            #     len(word2idx) - len(missing_words), len(word2idx), len(missing_words)))
 
     def forward(self, x, lengths, n_samples=1):
         # Embed word ids to vectors

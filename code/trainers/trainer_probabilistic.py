@@ -25,9 +25,8 @@ class TrainerProbabilistic:
     def __init__(self, config, path=None):
 
         self.config = config
-        self.train_dataset = dataset_factory(config, split='train') #This will now return hotels8k train
-        self.test_dataset = dataset_factory(config, split='test') #returns hotels8k test now
-
+        self.train_dataset = dataset_factory(config, split='train') #This will now return hotels50k train
+        self.test_dataset = dataset_factory(config, split='test') #returns hotels50k test
         self.train_dataloader = self.train_dataset.get_loader()
         self.test_dataloader = self.test_dataset.get_loader()
         date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -115,21 +114,11 @@ class TrainerProbabilistic:
             #     pprint.pprint(out, stream=fout)
 
             loss_total = 0
-            for data in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
-                source, source_modalities, source_lens, target = self.process_input(data)
+            for image, target, index, text in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
 
-                if batch_number % self.config.train.log_step == 0 and batch_number != 0:
-                    with torch.no_grad():
-                        loss, loss_dict = \
-                            self.compute_loss(source, source_modalities, source_lens, target)
-                    for loss_name in loss_dict:
-                        self.train_writer.add_scalar(loss_name, loss_dict[loss_name], batch_number)
-                    test_loss, test_loss_dict = self.compute_test_loss()
-                    for loss_name in test_loss_dict:
-                        self.test_writer.add_scalar(loss_name, test_loss_dict[loss_name], batch_number)
-
+                proc_image, proc_text, proc_target = self.prepare_image_data(image), self.prepare_text_data(text), self.prepare_image_data(target)
                 loss, loss_dict = \
-                    self.compute_loss(source, source_modalities, source_lens, target)
+                    self.compute_loss(proc_image, proc_target, proc_text)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -157,29 +146,29 @@ class TrainerProbabilistic:
         self.test_writer.close()
         run.stop()
 
-    def process_input(self, data):
-        source_modalities = random.choices(['image', 'text'], k=self.config.number_of_categories_combined)
-        source = []
-
-        for idx, modality in enumerate(source_modalities):
-            current_modality = []
-            for sample in data:
-                current_modality.append(sample['source_data'][modality][idx])
-            source.append(current_modality)
-
-        source = [self.prepare_data_by_modality(modality, data) for data, modality in zip(source, source_modalities)]
-
-        source_lens = [list(x) for x in zip(*[d['source_lens'] for d in data])]
-        source_lens = [self.prepare_text_lens(lens) for lens in source_lens]
-        target = self.prepare_image_data([d['target_img'] for d in data])
-
-        return source, source_modalities, source_lens, target
-
-    def prepare_data_by_modality(self, modality, data):
-        if modality == 'image':
-            return self.prepare_image_data(data)
-        if modality == 'text':
-            return self.prepare_text_data(data)
+    # def process_input(self, data):
+    #     source_modalities = random.choices(['image', 'text'], k=self.config.number_of_categories_combined)
+    #     source = []
+    #
+    #     for idx, modality in enumerate(source_modalities):
+    #         current_modality = []
+    #         for sample in data:
+    #             current_modality.append(sample['source_data'][modality][idx])
+    #         source.append(current_modality)
+    #
+    #     source = [self.prepare_data_by_modality(modality, data) for data, modality in zip(source, source_modalities)]
+    #
+    #     source_lens = [list(x) for x in zip(*[d['source_lens'] for d in data])]
+    #     source_lens = [self.prepare_text_lens(lens) for lens in source_lens]
+    #     target = self.prepare_image_data([d['target_img'] for d in data])
+    #
+    #     return source, source_modalities, source_lens, target
+    #
+    # def prepare_data_by_modality(self, modality, data):
+    #     if modality == 'image':
+    #         return self.prepare_image_data(data)
+    #     if modality == 'text':
+    #         return self.prepare_text_data(data)
 
     def prepare_image_data(self, data):
         return torch.from_numpy(np.stack(data)).float().cuda()
@@ -203,13 +192,13 @@ class TrainerProbabilistic:
             embedding = self.encode_text(data, lens)
         return embedding
 
-    def compute_loss(self, source, source_modalities, source_lens, target):
+    def compute_loss(self, image, target, text):
 
-        source_embeddings = [self.encode(modality, data, lens) for modality, data, lens in zip(source_modalities, source, source_lens)]
+        image_query_embedding = self.encode_image(image)
+        text_query_embedding = self.text_encoder(text)
         target_embeddings = self.encode_image(target)
-
+        source_embeddings = [image_query_embedding, text_query_embedding]
         query_embedding, query_logsigma, z = self.modality_combiner(source_embeddings)
-
         embeddings = {
             'source': [{
                 'mean': embedding['embedding'],
