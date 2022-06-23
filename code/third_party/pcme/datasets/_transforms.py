@@ -64,27 +64,27 @@ def imagenet_transform(resize_size=256,
     return transform
 
 
-def tokenize(sentence, vocab, caption_drop_prob, start_end_tokens = True):
+def tokenize(sentence, caption_drop_prob, start_end_tokens = True):
     """nltk word_tokenize for caption transform.
     """
     tokens = word_tokenize(str(sentence).lower())
     tokenized_sentence = []
     if start_end_tokens:
-        tokenized_sentence.append(vocab('<start>'))
-    tokenized = [vocab(token) for token in tokens]
+        tokenized_sentence.append('start')
+    tokenized = [token for token in tokens]
     if caption_drop_prob > 0:
-        unk = vocab('<unk>')
-        tokenized = [vocab(token) if random.random() > caption_drop_prob else unk for token in tokens]
+        unk = 'unk'
+        tokenized = [token if random.random() > caption_drop_prob else unk for token in tokens]
     else:
-        tokenized = [vocab(token) for token in tokens]
+        tokenized = [token for token in tokens]
     if caption_drop_prob:
         N = int(len(tokenized) * caption_drop_prob)
         for _ in range(N):
             tokenized.pop(random.randrange(len(tokenized)))
     tokenized_sentence.extend(tokenized)
     if start_end_tokens:
-        tokenized_sentence.append(vocab('<end>'))
-    return torch.Tensor(tokenized_sentence)
+        tokenized_sentence.append('end')
+    return tokenized_sentence
 
 
 def caption_transform(vocab, caption_drop_prob=0):

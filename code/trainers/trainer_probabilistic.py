@@ -1,5 +1,3 @@
-import random
-
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import StepLR
 from criterions.criterion_factory import criterion_factory
@@ -19,6 +17,9 @@ import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
 import pprint
+import transformers
+from transformers import BertTokenizer
+from torchtext.data import get_tokenizer
 pp = pprint.PrettyPrinter(indent=4)
 import neptune.new as neptune
 class TrainerProbabilistic:
@@ -32,7 +33,7 @@ class TrainerProbabilistic:
         date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
         self.image_encoder = image_model_factory(config).cuda()
-        self.text_encoder = text_model_factory(config, self.train_dataset.get_vocab().word2idx).cuda()
+        self.text_encoder = text_model_factory(config, config.vocab_length).cuda()
         self.modality_combiner = modality_combiner_factory(config).cuda()
 
         self.criterion = criterion_factory(config.criterion.train.name, config).cuda()
@@ -114,11 +115,11 @@ class TrainerProbabilistic:
             #     pprint.pprint(out, stream=fout)
 
             loss_total = 0
-            for image, target, index, text in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
-
-                proc_image, proc_text, proc_target = self.prepare_image_data(image), self.prepare_text_data(text), self.prepare_image_data(target)
+            for image, text, target, text_length in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
+                proc_image, proc_text, proc_target, text_length = self.prepare_image_data(image), text,\
+                                                     self.prepare_image_data(target), self.prepare_text_lens(text_length)
                 loss, loss_dict = \
-                    self.compute_loss(proc_image, proc_target, proc_text)
+                    self.compute_loss(proc_image, proc_target, text.long().cuda(), text_length)
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -128,57 +129,24 @@ class TrainerProbabilistic:
                 batch_number += 1
             run['loss_total'].log(loss_total)
             run['current_epoch'].log(epoch)
-            _, neptune_data_frfr = self.eval(self.test_dataset) #neptune_data_frfr is a dictionary with key equal to metric name and value equal to that metric's performance
-            # run['evaluation_metrics']= neptune_data_frfr
-            for key in neptune_data_frfr:
-                run[f'evaluation_metrics/{key}'].log(neptune_data_frfr[key])
-            if epoch%self.config.train.epochs_between_checkpoints == self.config.train.epochs_between_checkpoints - 1:
-                self.save_models(self.save_model_path, "model{}".format(epoch+1))
-            if epoch % self.config.train.val_epochs == self.config.train.val_epochs - 1:
-                out, neptune_data = self.eval(self.test_dataset)
-                pp.pprint(out)
-                with open(os.path.join(self.save_model_path, "results_{}.txt".format(epoch + 1)),
-                          'wt') as fout:
-                    pprint.pprint(out, stream=fout)
+            # _, neptune_metric_data_ = self.eval(self.test_dataset)
+            # for key in neptune_metric_data_:
+            #     run[f'evaluation_metrics/{key}'].log(neptune_metric_data_[key])
+            # if epoch%self.config.train.epochs_between_checkpoints == self.config.train.epochs_between_checkpoints - 1:
+            #     self.save_models(self.save_model_path, "model{}".format(epoch+1))
+            # if epoch % self.config.train.val_epochs == self.config.train.val_epochs - 1:
+            #     out, neptune_data = self.eval(self.test_dataset)
+            #     pp.pprint(out)
+            #     with open(os.path.join(self.save_model_path, "results_{}.txt".format(epoch + 1)),
+            #               'wt') as fout:
+            #         pprint.pprint(out, stream=fout)
 
             self.scheduler.step()
         self.train_writer.close()
         self.test_writer.close()
         run.stop()
-
-    # def process_input(self, data):
-    #     source_modalities = random.choices(['image', 'text'], k=self.config.number_of_categories_combined)
-    #     source = []
-    #
-    #     for idx, modality in enumerate(source_modalities):
-    #         current_modality = []
-    #         for sample in data:
-    #             current_modality.append(sample['source_data'][modality][idx])
-    #         source.append(current_modality)
-    #
-    #     source = [self.prepare_data_by_modality(modality, data) for data, modality in zip(source, source_modalities)]
-    #
-    #     source_lens = [list(x) for x in zip(*[d['source_lens'] for d in data])]
-    #     source_lens = [self.prepare_text_lens(lens) for lens in source_lens]
-    #     target = self.prepare_image_data([d['target_img'] for d in data])
-    #
-    #     return source, source_modalities, source_lens, target
-    #
-    # def prepare_data_by_modality(self, modality, data):
-    #     if modality == 'image':
-    #         return self.prepare_image_data(data)
-    #     if modality == 'text':
-    #         return self.prepare_text_data(data)
-
     def prepare_image_data(self, data):
         return torch.from_numpy(np.stack(data)).float().cuda()
-
-    def prepare_text_data(self, data):
-        return nn.utils.rnn.pad_sequence(data, batch_first=True, padding_value=0).long().cuda()
-
-    def prepare_text_lens(self, data):
-        return torch.from_numpy(np.stack(data)).long().flatten().cuda()
-
     def encode_image(self, images):
         return self.image_encoder(images)
 
@@ -192,10 +160,10 @@ class TrainerProbabilistic:
             embedding = self.encode_text(data, lens)
         return embedding
 
-    def compute_loss(self, image, target, text):
+    def compute_loss(self, image, target, text, text_length):
 
         image_query_embedding = self.encode_image(image)
-        text_query_embedding = self.text_encoder(text)
+        text_query_embedding = self.text_encoder(text, text_length)
         target_embeddings = self.encode_image(target)
         source_embeddings = [image_query_embedding, text_query_embedding]
         query_embedding, query_logsigma, z = self.modality_combiner(source_embeddings)
@@ -250,6 +218,8 @@ class TrainerProbabilistic:
         if modality == 'text':
             return self.prepare_test_texts(data, lens)
 
+    def prepare_text_lens(self, data):
+        return torch.from_numpy(np.stack(data)).long().flatten().cuda()
 
     @torch.no_grad()
     def eval(self, dataset):

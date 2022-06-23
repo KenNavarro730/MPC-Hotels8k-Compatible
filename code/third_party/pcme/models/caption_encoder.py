@@ -22,7 +22,7 @@ def get_pad_mask(max_length, lengths, set_pad_to_one=True):
 
 
 class EncoderText(nn.Module):
-    def __init__(self, config, word2idx):
+    def __init__(self, config, num_of_unique_words):
         super(EncoderText, self).__init__()
 
         wemb_type, word_dim, embed_dim = \
@@ -33,21 +33,24 @@ class EncoderText(nn.Module):
         self.use_probemb = True
         self.num_embeds = config.num_embeds
         # Word embedding
-        self.embed = nn.Embedding(len(word2idx), word_dim)
+        self.num_of_unique_words = num_of_unique_words
+        self.embed = nn.Embedding(903,word_dim)
+        #self.embed takes in a B x N sequence of words
         self.embed.weight.requires_grad = False
 
         # Sentence embedding
         self.rnn = nn.GRU(word_dim, embed_dim // 2, bidirectional=True, batch_first=True)
+        #self.rnn takes in a B X N X word_dim sequence
 
         if self.use_attention:
             self.pie_net = PIENet(self.num_embeds, word_dim, embed_dim, word_dim // 2)
 
         self.uncertain_net = UncertaintyModuleText(self.num_embeds, word_dim, embed_dim, word_dim // 2)
-        self.init_weights(wemb_type, word2idx, word_dim)
+        self.init_weights(wemb_type, word_dim)
 
         # self.n_samples_inference = config.get('n_samples_inference', 0)
 
-    def init_weights(self, wemb_type, word2idx, word_dim):
+    def init_weights(self, wemb_type, word_dim):
         if wemb_type is None:
             nn.init.xavier_uniform_(self.embed.weight)
         else:
@@ -75,6 +78,7 @@ class EncoderText(nn.Module):
             #     len(word2idx) - len(missing_words), len(word2idx), len(missing_words)))
 
     def forward(self, x, lengths, n_samples=1):
+        #lengths seems to be a
         # Embed word ids to vectors
         wemb_out = self.embed(x)
         # Forward propagate RNNs

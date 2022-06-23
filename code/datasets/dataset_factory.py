@@ -5,5 +5,5 @@ def dataset_factory(config, split, **kwargs):
     if config.dataset_name == 'coco':
         return Coco(config, split, kwargs.get('clothing_types', None))
     if config.dataset_name == 'Hotels8k':
-        return Hotels8k(config.dataset_path, split)
+        return Hotels8k(config.dataset_path,config, split)
 
