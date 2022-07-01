@@ -119,7 +119,7 @@ class TrainerProbabilistic:
                 batch_number += 1
             run['loss_total'].log(loss_total)
             run['current_epoch'].log(epoch)
-            cons_and_nep_data = self.eval()
+            cons_and_nep_data = self.eval(epoch)
             for key in cons_and_nep_data:
                 run[f'evaluation/recall_@_{key[1:]}'].log(cons_and_nep_data[key])
                 print(f'recall_@_{key[1:]}: ', cons_and_nep_data[key])
@@ -204,12 +204,12 @@ class TrainerProbabilistic:
         return torch.from_numpy(np.stack(data)).long().flatten().cuda()
 
     @torch.no_grad()
-    def eval(self):
+    def eval(self, epoch):
         self.set_eval()
         recall_1_sum, recall_5_sum, recall_10_sum, recall_50_sum = 0,0,0,0
         length = 0
         stackofimages = torch.stack(self.test_dataset.get_test_queries()).float().cuda()
-        for image, text, target, text_length in tqdm(self.test_dataloader, desc='testing'):
+        for image, text, target, text_length in tqdm(self.test_dataloader, desc=f'testing for epoch {epoch}'):
             # Print statements were meant for debugging purposes but are to nice to look at within console.
             database_embeddings = self.encode_image(stackofimages)['embedding']
             assert database_embeddings.shape[0] == self.test_dataset.test_queries_len()
@@ -243,10 +243,10 @@ class TrainerProbabilistic:
                 query_row = shortenedindices[index] # 1 x G where G is gallery size
                 if number in query_row:
                     resultant_k[index] = torch.where(query_row == number)[0][0].item()
-            recall_1_sum += torch.where(resultant_k <=1)[0].shape[0]
-            recall_5_sum += torch.where(resultant_k <=5)[0].shape[0]
-            recall_10_sum += torch.where(resultant_k <=10)[0].shape[0]
-            recall_50_sum += torch.where(resultant_k <= 50)[0].shape[0]
+            recall_1_sum += torch.where(resultant_k < 1)[0].shape[0]
+            recall_5_sum += torch.where(resultant_k < 5)[0].shape[0]
+            recall_10_sum += torch.where(resultant_k < 10)[0].shape[0]
+            recall_50_sum += torch.where(resultant_k < 50)[0].shape[0]
             length +=16
         recall_1 = recall_1_sum/length
         recall_5 = recall_5_sum/length
