@@ -26,7 +26,7 @@ class Hotels8k(torch.utils.data.Dataset):
         self.split = split
         self.config = config
         self.path_to_annotations= '/home/tun84049/Downloads/batch_results.csv' #replace with path to csv file containing annotations
-        self.class_train_test_dict = self.create_train_test(self.available_parents) #returns a dictionary containing each class and its train and test image files we sample from
+        self.class_train_test_dict = self.create_train_test() #returns a dictionary containing each class and its train and test image files we sample from
         if split == 'train':
             self.transform = transforms.Compose([
                 transforms.RandomResizedCrop(224, scale=(0.75, 1.33)),
@@ -50,18 +50,22 @@ class Hotels8k(torch.utils.data.Dataset):
         print("Length of vocab set:", len(self.vocab_set))
         tokenizer.fit_on_texts(list(self.vocab_set))
         self.word_to_id_ = tokenizer.word_index
-        self.samples = np.array(self._make_dataset())
-        random.shuffle(self.samples)
-        self.text_queries = np.array([s[0] for s in self.samples])
-        self.target_images = np.array([s[1] for s in self.samples])
-        self.image_queries = np.array([s[2] for s in self.samples])
-        self.text_query_length = np.array([s[3] for s in self.samples])
-        self.train = split == 'train'
+        self.train_samples, self.test_samples, self.database_images = np.array(self._make_dataset())
+        random.shuffle(self.train_samples)
+        random.shuffle(self.test_samples)
+        self.train_text_queries = np.array([s[0] for s in self.train_samples])
+        self.train_target_images = np.array([s[1] for s in self.train_samples])
+        self.train_image_queries = np.array([s[2] for s in self.train_samples])
+        self.train_text_query_length = np.array([s[3] for s in self.train_samples])
+        self.test_text_queries = np.array([s[0] for s in self.test_samples])
+        self.test_target_images = np.array([s[1] for s in self.test_samples])
+        self.test_images_queries = np.array([s[2] for s in self.test_samples])
+        self.test_text_query_length = np.array([s[3] for s in self.test_samples])
         self.reset_seed()
-    def create_train_test(self, path_dictionary):
+    def create_train_test(self):
         path_dict = dict()
-        for parent in path_dictionary:
-            for classNum in path_dictionary[parent]:
+        for parent in self.available_parents:
+            for classNum in self.available_parents[parent]:
                 listofpaths = os.listdir(os.path.join(self.data_directory, str(parent), str(classNum), 'travel_website/'))
                 listofpaths = [value for value in listofpaths if value[-3:] == 'jpg']
                 random.shuffle(listofpaths)
@@ -85,6 +89,13 @@ class Hotels8k(torch.utils.data.Dataset):
                 caption_to_url[accepted_data_unique.iloc[i]['Description']] = path
                 setofpaths.add(path)
         return caption_to_url
+    def get_test_queries(self):
+        target_images_ = []
+        for image_path in self.database_images:
+            target_images_.append(self.transform(Image.open(image_path).convert('RGB')))
+        return target_images_
+    def test_queries_len(self):
+        return len(self.database_images)
     def clean_captions(self, caption_to_url):
         captionslist = []
         unique_vocab = set()
@@ -108,49 +119,61 @@ class Hotels8k(torch.utils.data.Dataset):
         padded_token_ids[0, :len(word_to_ids)] = word_to_ids
         text_length = [torch.tensor(len(word_to_ids))]
         return padded_token_ids.flatten(), text_length
+    def get_train_data(self):
+        return self.train_samples
+    def get_test_data(self):
+        return self.test_samples
     def _make_dataset(self):
         samples = []
-        query_infused_data = []
+        train_data = []
+        test_data = []
+        database_images = []
         random.shuffle(samples)
+        assert len(self.cleaned_captions) == len(self.caption_to_url)
         for caption, dirty_caption in zip(self.cleaned_captions, self.caption_to_url):
             target_image_path = str(self.caption_to_url[dirty_caption])
             parent, classnum = target_image_path.split('/')[-4], target_image_path.split('/')[-3]
             tokenized_caption, len_of_caption = self.process_captions(caption)
             if parent in self.available_parents.keys() and classnum in self.available_parents[parent]:
-                if self.split == 'train':
-                    for image_url in self.class_train_test_dict[f'{classnum}_train']:
-                        if image_url != target_image_path:
-                            full_image_url = os.path.join(self.data_directory, str(parent), str(classnum), 'travel_website', image_url)
-                            sample = (tokenized_caption, target_image_path, full_image_url, len_of_caption)
-                            query_infused_data.append(sample)
-                if self.split == 'test':
-                    for image_url_t in self.class_train_test_dict[f'{classnum}_test']:
-                        if image_url_t != target_image_path:
-                            full_image_url_t = os.path.join(self.data_directory, str(parent), str(classnum),
-                                                          'travel_website', image_url_t)
-                            sample = (tokenized_caption, target_image_path, full_image_url_t, len_of_caption)
-                            query_infused_data.append(sample)
+                for image_url in self.class_train_test_dict[f'{classnum}_train']:
+                    if image_url != target_image_path:
+                        full_image_url = os.path.join(self.data_directory, str(parent), str(classnum), 'travel_website', image_url)
+                        sample = (tokenized_caption, target_image_path, full_image_url, len_of_caption)
+                        train_data.append(sample)
+                    if os.path.join(self.data_directory, str(parent), str(classnum), 'travel_website', image_url) not in database_images:
+                        database_images.append(os.path.join(self.data_directory, str(parent), str(classnum), 'travel_website', image_url))
+                for image_url_t in self.class_train_test_dict[f'{classnum}_test']:
+                    if image_url_t != target_image_path:
+                        full_image_url_t = os.path.join(self.data_directory, str(parent), str(classnum),
+                                                      'travel_website', image_url_t)
+                        sample = (tokenized_caption, target_image_path, full_image_url_t, len_of_caption)
+                        test_data.append(sample)
+                    if os.path.join(self.data_directory, str(parent), str(classnum),'travel_website', image_url_t) not in database_images:
+                        database_images.append(os.path.join(self.data_directory, str(parent), str(classnum),'travel_website', image_url_t))
             else:
-                if self.split == 'train':
-                    for image_url_ in self.class_train_test_dict[f'{classnum}_train']:
-                        if image_url_ != target_image_path:
-                            full_image_url_ = os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website', image_url_)
-                            sample = (tokenized_caption, target_image_path, full_image_url_ , len_of_caption)
-                            query_infused_data.append(sample)
-                if self.split == 'test':
-                    for image_url_t_ in self.class_train_test_dict[f'{classnum}_test']:
-                        if image_url_t_ != target_image_path:
-                            full_image_url_t_ = os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website',image_url_t_)
-                            sample = (tokenized_caption, target_image_path, full_image_url_t_, len_of_caption)
-                            query_infused_data.append(sample)
-        return query_infused_data #each element in this list is (text_query, target_image_path, image_query_path)
+                for image_url_ in self.class_train_test_dict[f'{classnum}_train']:
+                    if image_url_ != target_image_path:
+                        full_image_url_ = os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website', image_url_)
+                        sample = (tokenized_caption, target_image_path, full_image_url_ , len_of_caption)
+                        train_data.append(sample)
+                    if os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website', image_url_) not in database_images:
+                        database_images.append(os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website', image_url_))
+                for image_url_t_ in self.class_train_test_dict[f'{classnum}_test']:
+                    if image_url_t_ != target_image_path:
+                        full_image_url_t_ = os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website',image_url_t_)
+                        sample = (tokenized_caption, target_image_path, full_image_url_t_, len_of_caption)
+                        test_data.append(sample)
+                    if os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website',image_url_t_) not in database_images:
+                        database_images.append(os.path.join(self.my_path, 'train', str(parent), str(classnum), 'travel_website',image_url_t_))
+        return train_data, test_data, database_images #each element in this list is (text_query, target_image_path, image_query_path)
     def get_loader(self, pin_memory = True):
         if self.split == 'test' or self.split == 'val':
             num_workers = self.config.dataloader.test_num_workers
-            persistent_workers= False
+            persistent_workers=False
         else:
             num_workers = self.config.dataloader.num_workers
             persistent_workers=True
+
         return torch.utils.data.DataLoader(
             self,
             batch_size = self.config.dataloader.batch_size,
@@ -160,12 +183,24 @@ class Hotels8k(torch.utils.data.Dataset):
             pin_memory=True,
             persistent_workers=persistent_workers)
     def __getitem__(self, index):
-        image_path = self.image_queries[index]
-        text = self.text_queries[index]
-        target_img_path = self.target_images[index]
-        target = self.transform(Image.open(target_img_path).convert('RGB'))
-        image = self.transform(Image.open(image_path).convert('RGB'))
-        text_length = self.text_query_length[index]
+        image,text,target,text_length = 0,0,0,0
+        if self.split == 'train':
+            image_path = self.train_image_queries[index]
+            text = self.train_text_queries[index]
+            target_img_path = self.train_target_images[index]
+            target = self.transform(Image.open(target_img_path).convert('RGB'))
+            image = self.transform(Image.open(image_path).convert('RGB'))
+            text_length = self.train_text_query_length[index]
+        if self.split == 'test':
+            image_path = self.test_images_queries[index]
+            text = self.test_text_queries[index]
+            target_img_path = self.test_target_images[index]
+            target = self.transform(Image.open(target_img_path).convert('RGB'))
+            image = self.transform(Image.open(image_path).convert('RGB'))
+            text_length = self.test_text_query_length[index]
         return image, text, target, text_length  #We need to also insert the text query here, this can be done tommorrow once I set everything else up
     def __len__(self):
-        return len(self.samples)
+        if self.split == 'train':
+            return len(self.train_samples)
+        if self.split == 'test':
+            return len(self.test_samples)

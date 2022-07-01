@@ -10,6 +10,7 @@ trainer: probabilistic
 
 dataloader:
     batch_size: 16
+    batch_size_test: 16
     num_workers: 8
     test_num_workers: 8
     word_dim: 300

@@ -17,9 +17,7 @@ import torch.nn as nn
 from tqdm import tqdm
 import numpy as np
 import pprint
-import transformers
-from transformers import BertTokenizer
-from torchtext.data import get_tokenizer
+import torch.nn.functional as F
 pp = pprint.PrettyPrinter(indent=4)
 import neptune.new as neptune
 class TrainerProbabilistic:
@@ -31,7 +29,6 @@ class TrainerProbabilistic:
         self.train_dataloader = self.train_dataset.get_loader()
         self.test_dataloader = self.test_dataset.get_loader()
         date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-
         self.image_encoder = image_model_factory(config).cuda()
         self.text_encoder = text_model_factory(config, config.vocab_length).cuda()
         self.modality_combiner = modality_combiner_factory(config).cuda()
@@ -107,13 +104,6 @@ class TrainerProbabilistic:
             api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIzMTRjODI4OC1iN2U4LTQ5ZWQtODQyNy1hNWU4NzAyOTIzMGYifQ==",
         )
         for epoch in range(self.config.train.num_epochs):
-
-            # out = self.eval(self.test_dataset)
-            # pp.pprint(out)
-            # with open(os.path.join(self.save_model_path, "results_{}.txt".format(epoch + 1)),
-            #           'wt') as fout:
-            #     pprint.pprint(out, stream=fout)
-
             loss_total = 0
             for image, text, target, text_length in tqdm(self.train_dataloader, desc='Training for epoch ' + str(epoch)):
                 proc_image, proc_text, proc_target, text_length = self.prepare_image_data(image), text,\
@@ -129,18 +119,10 @@ class TrainerProbabilistic:
                 batch_number += 1
             run['loss_total'].log(loss_total)
             run['current_epoch'].log(epoch)
-            # _, neptune_metric_data_ = self.eval(self.test_dataset)
-            # for key in neptune_metric_data_:
-            #     run[f'evaluation_metrics/{key}'].log(neptune_metric_data_[key])
-            # if epoch%self.config.train.epochs_between_checkpoints == self.config.train.epochs_between_checkpoints - 1:
-            #     self.save_models(self.save_model_path, "model{}".format(epoch+1))
-            # if epoch % self.config.train.val_epochs == self.config.train.val_epochs - 1:
-            #     out, neptune_data = self.eval(self.test_dataset)
-            #     pp.pprint(out)
-            #     with open(os.path.join(self.save_model_path, "results_{}.txt".format(epoch + 1)),
-            #               'wt') as fout:
-            #         pprint.pprint(out, stream=fout)
-
+            cons_and_nep_data = self.eval()
+            for key in cons_and_nep_data:
+                run[f'evaluation/recall_@_{key[1:]}'].log(cons_and_nep_data[key])
+                print(f'recall_@_{key[1:]}: ', cons_and_nep_data[key])
             self.scheduler.step()
         self.train_writer.close()
         self.test_writer.close()
@@ -222,109 +204,57 @@ class TrainerProbabilistic:
         return torch.from_numpy(np.stack(data)).long().flatten().cuda()
 
     @torch.no_grad()
-    def eval(self, dataset):
+    def eval(self):
         self.set_eval()
-        out = []
-        neptune_data = {}
-        test_queries = dataset.get_test_queries()
-
-        all_imgs_f = []
-        data = []
-        caption_lens = []
-
-        all_target_ids = self.test_dataset.gallery
-        all_target_cats = self.test_dataset.gallery_cats
-        # compute all image features
-        imgs = []
-        for i in tqdm(range(len(all_target_ids))):
-            imgs += [self.test_dataset.get_img_for_id_and_cat(all_target_ids[i])]
-            if len(imgs) >= 128 or i == len(dataset.imgs) - 1:
-
-                imgs = self.prepare_test_image(imgs)
-                embeddings = self.encode_image(imgs)
-
-                all_imgs_f += [embeddings['embedding'].cpu()]
-                imgs = []
-        imgs_f_tensor = torch.cat(all_imgs_f)
-        for modality_combination, queries in test_queries.items():
-            all_queries_f = []
-            modalities = modality_combination.split('_')
-            for t in tqdm(queries):
-                torch.cuda.empty_cache()
-                current_data = [dataset.retrieve_modality(modality, id, cat) for modality, id, cat in zip(modalities, t['images'], t['categories'])]
-                data.append(current_data)
-                caption_lens.append([torch.tensor([d.shape[0]]) if modality == 'text' else 0 for modality, d in zip(modalities, current_data)])
-
-                if len(data) >= 128 or t is queries[-1]:
-
-                    data = [list(x) for x in zip(*data)]
-                    caption_lens = [list(x) for x in zip(*caption_lens)]
-
-                    data = [self.prepare_test_data_by_modality(modality, d, lens) for d, modality, lens in zip(data, modalities, caption_lens)]
-                    caption_lens = [self.prepare_text_lens(lens) for lens in caption_lens]
-
-                    source_embeddings = [self.encode(modality, d, lens) for modality, d, lens in
-                                         zip(modalities, data, caption_lens)]
-
-                    query_embedding, query_logsigma, log_z = self.modality_combiner(source_embeddings)
-                    f = query_embedding.cpu()
-                    all_queries_f += [f]
-
-                    data = []
-                    caption_lens = []
-
-            queries_f_tensor = torch.cat(all_queries_f)
-
-            # match test queries to target images, get nearest neighbors
-
-            normed_query_f = l2_normalize(queries_f_tensor).cuda()
-            normed_imgs_f = l2_normalize(imgs_f_tensor).cuda()
-            sims_mean_only = normed_query_f @ normed_imgs_f.t()
-            print(sims_mean_only.shape)
-
-            del queries_f_tensor
-            del normed_imgs_f
-
-            sims_dict = {
-                'mean-only': sims_mean_only.cpu(),
-            }
-            out += [('Modality combination: ', modality_combination)]
-
-            for sim_type, sims in sims_dict.items():
-                out += [('Sim type: ', sim_type)]
-                print("sims shape: ", sims.shape)
-                nn_result = [np.argsort(-sims[i, :])[:1500] for i in range(sims.shape[0])]
-
-                # compute recalls
-
-                nn_result = [[all_target_ids[nn] for nn in nns] for nns in nn_result]
-                out += [('sample_size ', len(nn_result))]
-                for k in [1,5,10, 50]:
-                    r = 0.0
-                    for i, nns in enumerate(nn_result):
-                        query_cats = set(queries[i]['categories'])
-                        query_imgs = [img for img, modality in zip(queries[i]['images'], modalities) if modality != 'text']
-                        if any(query_cats.issubset(all_target_cats[x]) and x not in query_imgs for x in nns[:k]):
-                            r += 1
-
-                    r /= len(nn_result)
-                    out += [('recall_top' + str(k) + '_correct_composition', r)]
-                    neptune_data[f'top {k} recall'] = r
-                total = 0
-
-                for i, nns in enumerate(nn_result):
-                    query_cats = set(queries[i]['categories'])
-                    number_of_images = len(
-                        self.test_dataset.img_ids_per_cats['_'.join([str(x) for x in sorted(query_cats)])])
-
-                    query_imgs = [img for img, modality in zip(queries[i]['images'], modalities) if modality != 'text']
-                    number_of_positives = sum([query_cats.issubset(all_target_cats[x]) and x not in query_imgs for x in
-                                               nns[:number_of_images]])
-                    total += number_of_positives / number_of_images
-                out += [('R_P score: ', total / len(nn_result))]
-                neptune_data['r-Precision'] = total/len(nn_result)
+        recall_1_sum, recall_5_sum, recall_10_sum, recall_50_sum = 0,0,0,0
+        length = 0
+        stackofimages = torch.stack(self.test_dataset.get_test_queries()).float().cuda()
+        for image, text, target, text_length in tqdm(self.test_dataloader, desc='testing'):
+            # Print statements were meant for debugging purposes but are to nice to look at within console.
+            database_embeddings = self.encode_image(stackofimages)['embedding']
+            assert database_embeddings.shape[0] == self.test_dataset.test_queries_len()
+            proc_image = self.prepare_image_data(image)
+            proc_target = self.prepare_image_data(target)
+            text_len = self.prepare_text_lens(text_length)
+            target_indices = []
+            for target_image in proc_target:
+                target_indices.append(torch.where(torch.where(stackofimages == target_image, 1, 0).all(dim=1)==True)[0][0].item())
+            image_query_embedding = self.encode_image(proc_image)
+            print("text query token shape:", text.shape, " text_length_shape:", text_len.shape)
+            text_query_embedding = self.text_encoder(text.long().cuda(), text_len)
+            source_embedding = [image_query_embedding, text_query_embedding]
+            query_embedding, query_logsigma, z = self.modality_combiner(source_embedding) #Q X Mean Vector Dim where Q equals Query Size
+            #query_embedding is the mean vector in this case (you can verify via modality combiner function)
+            imgs_f = []
+            print("database_embeddings_shape:", database_embeddings.shape) #G x Mean Vector Dim
+            for embeddingg in database_embeddings:
+                imgs_f += [embeddingg.cpu()]
+            imgs_f_tensor = torch.stack(imgs_f)
+            normed_imgs = F.normalize(imgs_f_tensor, p=2, dim=-1).cuda()
+            normed_query = F.normalize(query_embedding, p=2, dim=-1).cuda()
+            print("normed_query_shape:", normed_query.shape," normed_imgs_shape: ", normed_imgs.shape) #Their dimensions should match in at least one index
+            similarity_matrix = torch.matmul(normed_query, normed_imgs.transpose(0,-1)) # position (n,d) is similarity between nth query and d'th database image
+            del normed_query
+            del normed_imgs
+            indicess = torch.sort(similarity_matrix,dim=1, descending=True).indices # 16 x Gallery Size
+            resultant_k = torch.full((16,), indicess.shape[1]+1)  # Set values at least as high as number of images in gallery + 1
+            shortenedindices = indicess[:, :51]
+            for index, number in enumerate(target_indices):
+                query_row = shortenedindices[index] # 1 x G where G is gallery size
+                if number in query_row:
+                    resultant_k[index] = torch.where(query_row == number)[0][0].item()
+            recall_1_sum += torch.where(resultant_k <=1)[0].shape[0]
+            recall_5_sum += torch.where(resultant_k <=5)[0].shape[0]
+            recall_10_sum += torch.where(resultant_k <=10)[0].shape[0]
+            recall_50_sum += torch.where(resultant_k <= 50)[0].shape[0]
+            length +=16
+        recall_1 = recall_1_sum/length
+        recall_5 = recall_5_sum/length
+        recall_10 = recall_10_sum/length
+        recall_50 = recall_50_sum/length
+        console_and_neptune_data = {'r1':recall_1, 'r5':recall_5, 'r10':recall_10, 'r50':recall_50}
         self.set_train()
-        return out, neptune_data
+        return console_and_neptune_data
 
     def save_config(self, save_to):
         if not os.path.exists(save_to):
