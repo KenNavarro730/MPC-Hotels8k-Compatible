@@ -117,12 +117,17 @@ class TrainerProbabilistic:
                 loss_total += loss
 
                 batch_number += 1
-            run['loss_total'].log(loss_total)
+            run['train/train_loss'].log(loss_total)
             run['current_epoch'].log(epoch)
-            cons_and_nep_data = self.eval(epoch)
+            cons_and_nep_data, epoch_loss, perfect_acc = self.eval(epoch)
+            run['evaluation/validation_loss'].log(epoch_loss)
             for key in cons_and_nep_data:
                 run[f'evaluation/recall_@_{key[1:]}'].log(cons_and_nep_data[key])
                 print(f'recall_@_{key[1:]}: ', cons_and_nep_data[key])
+            run['perfect/recall_1'] = perfect_acc[0]
+            run['perfect/recall_5'] = perfect_acc[1]
+            run['perfect/recall_10'] = perfect_acc[2]
+            run['perfect/recall_50'] = perfect_acc[3]
             self.scheduler.step()
         self.train_writer.close()
         self.test_writer.close()
@@ -172,15 +177,33 @@ class TrainerProbabilistic:
         return loss, loss_dict
 
     @torch.no_grad()
-    def compute_test_loss(self):
+    def compute_test_loss(self, image, text, text_length, target):
         self.set_eval()
 
-        data = next(iter(self.test_dataloader))
-        source, source_modalities, source_lens, target = self.process_input(data)
+        image_query_embedding = self.encode_image(image)
+        text_query_embedding = self.text_encoder(text, text_length)
+        target_embeddings = self.encode_image(target)
+        source_embeddings = [image_query_embedding, text_query_embedding]
+        query_embedding, query_logsigma, z = self.modality_combiner(source_embeddings)
+        embeddings = {
+            'source': [{
+                'mean': embedding['embedding'],
+                'logsigma': embedding['logsigma']
+            } for embedding in source_embeddings],
+            'target': {
+                'mean': target_embeddings['embedding'],
+                'logsigma': target_embeddings['logsigma']
+            },
+            'query': {
+                'mean': query_embedding,
+                'logsigma': query_logsigma
+            },
+            'query_z': z,
+            'target_z': torch.zeros_like(z)
+        }
 
-        loss, loss_dict = self.compute_loss(source, source_modalities, source_lens, target)
+        loss, loss_dict = self.criterion(embeddings)
 
-        self.set_train()
         return loss, loss_dict
 
 
@@ -207,8 +230,10 @@ class TrainerProbabilistic:
     def eval(self, epoch):
         self.set_eval()
         recall_1_sum, recall_5_sum, recall_10_sum, recall_50_sum = 0,0,0,0
+        perfect_1_sum, perfect_5_sum, perfect_10_sum, perfect_50_sum = 0,0,0,0
         length = 0
         stackofimages = torch.stack(self.test_dataset.get_test_queries()).float().cuda()
+        loss_total = 0
         for image, text, target, text_length in tqdm(self.test_dataloader, desc=f'testing for epoch {epoch}'):
             # Print statements were meant for debugging purposes but are to nice to look at within console.
             database_embeddings = self.encode_image(stackofimages)['embedding']
@@ -217,6 +242,7 @@ class TrainerProbabilistic:
             proc_target = self.prepare_image_data(target)
             text_len = self.prepare_text_lens(text_length)
             target_indices = []
+            loss, _ = self.compute_test_loss(proc_image, text.long().cuda(), text_len, proc_target)
             for target_image in proc_target:
                 target_indices.append(torch.where(torch.where(stackofimages == target_image, 1, 0).all(dim=1)==True)[0][0].item())
             image_query_embedding = self.encode_image(proc_image)
@@ -243,18 +269,28 @@ class TrainerProbabilistic:
                 query_row = shortenedindices[index] # 1 x G where G is gallery size
                 if number in query_row:
                     resultant_k[index] = torch.where(query_row == number)[0][0].item()
+            perfect_test = torch.full((16,), 0)
             recall_1_sum += torch.where(resultant_k < 1)[0].shape[0]
             recall_5_sum += torch.where(resultant_k < 5)[0].shape[0]
             recall_10_sum += torch.where(resultant_k < 10)[0].shape[0]
             recall_50_sum += torch.where(resultant_k < 50)[0].shape[0]
+            perfect_1_sum += torch.where(perfect_test<1)[0].shape[0]
+            perfect_5_sum += torch.where(perfect_test<5)[0].shape[0]
+            perfect_10_sum += torch.where(perfect_test<10)[0].shape[0]
+            perfect_50_sum += torch.where(perfect_test<50)[0].shape[0]
             length +=16
+            loss_total += loss
         recall_1 = recall_1_sum/length
         recall_5 = recall_5_sum/length
         recall_10 = recall_10_sum/length
         recall_50 = recall_50_sum/length
+        perfect_1 = perfect_1_sum/length
+        perfect_5 = perfect_5_sum/length
+        perfect_10 = perfect_10_sum/length
+        perfect_50 = perfect_50_sum/length
         console_and_neptune_data = {'r1':recall_1, 'r5':recall_5, 'r10':recall_10, 'r50':recall_50}
         self.set_train()
-        return console_and_neptune_data
+        return console_and_neptune_data, loss_total, [perfect_1, perfect_5, perfect_10, perfect_50]
 
     def save_config(self, save_to):
         if not os.path.exists(save_to):
